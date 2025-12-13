@@ -11,4 +11,4 @@ Python application to fetch Shodan scan data for target IPs, compute risk scores
 ## Usage
 Build multi-arch image:
 
-docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/username/shodan-sec-monitor:latest --push .
+`docker buildx build --platform linux/amd64,linux/arm64 -t ghcr.io/username/shodan-sec-monitor:latest --push` .
