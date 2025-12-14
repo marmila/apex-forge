@@ -37,11 +37,11 @@ export TARGETS="8.8.8.8,1.1.1.1"`
 Environment Variables
 SHODAN_API_KEY – Your Shodan API key.`
 
-`TARGETS` – Comma-separated list of IPs to scan.
-`DB_HOST` – PostgreSQL hostname.
-`DB_NAME` – Database name.
-`DB_USER` – Database user.
-`DB_PASS` – Database password.
+- `TARGETS` – Comma-separated list of IPs to scan.
+- `DB_HOST` – PostgreSQL hostname.
+- `DB_NAME` – Database name.
+- `DB_USER` – Database user.
+- `DB_PASS` – Database password.
 
 
 ## Deployment Notes
