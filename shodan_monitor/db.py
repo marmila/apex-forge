@@ -111,10 +111,10 @@ def insert_scan_run(cur, targets_count: Optional[int] = None) -> uuid.UUID:
         INSERT INTO scan_runs (id, targets_count, status)
         VALUES (%s, %s, 'running')
         """,
-        (scan_id, targets_count)
+        (str(scan_id), targets_count)
     )
     logger.info("Inserted scan_run id=%s", scan_id)
-    return scan_id
+    return str(scan_id)
 
 def insert_target(cur, scan_run_id: uuid.UUID, ip: str, asn=None, org=None, country=None, last_update=None) -> int:
     cur.execute(
