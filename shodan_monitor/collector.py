@@ -1,9 +1,9 @@
 import time
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List
 
-from shodan_monitor.db import get_connection, init_db, start_scan, finish_scan, get_or_create_target
+from shodan_monitor.db import get_connection, init_db, insert_scan_run, insert_target, insert_service
 from shodan_monitor.shodan_client import ShodanClient
 from shodan_monitor.config import Config
 
@@ -12,7 +12,6 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
 )
-
 
 class ShodanCollector:
     """
@@ -52,8 +51,9 @@ class ShodanCollector:
         conn = get_connection()
         cur = conn.cursor()
 
-        scan_id = start_scan(len(targets))
-        logger.info("Created scan session id=%s", scan_id)
+        # crea una nuova scan_run
+        scan_run_id = insert_scan_run(cur, targets_count=len(targets))
+        logger.info("Created scan_run id=%s", scan_run_id)
 
         for ip in targets:
             ip = ip.strip()
@@ -68,12 +68,15 @@ class ShodanCollector:
 
                 logger.info("Target %s returned %d services", ip, len(services))
 
-                # create or update target
-                target_id = get_or_create_target(
+                # inserisci o aggiorna il target
+                target_id = insert_target(
+                    cur=cur,
+                    scan_run_id=scan_run_id,
                     ip=ip,
-                    asn=result.get("asn"),
                     org=result.get("org"),
+                    asn=result.get("asn"),
                     country=result.get("country_name"),
+                    last_update=result.get("last_update"),
                 )
 
                 for svc in services:
@@ -85,21 +88,17 @@ class ShodanCollector:
                     vulns = list(svc.get("vulns", []))
                     risk_score = len(vulns)
 
-                    logger.debug(
-                        "Service detected | ip=%s port=%s product=%s vulns=%d",
-                        ip,
-                        port,
-                        product,
-                        len(vulns),
-                    )
-
-                    cur.execute(
-                        """
-                        INSERT INTO services (
-                            scan_id, target_id, port, transport, product, version, banner_hash, discovered_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, now())
-                        """,
-                        (scan_id, target_id, port, transport, product, version, cpe),
+                    insert_service(
+                        cur=cur,
+                        scan_run_id=scan_run_id,
+                        target_id=target_id,
+                        port=port,
+                        transport=transport,
+                        product=product,
+                        version=version,
+                        cpe=cpe,
+                        vulns=vulns,
+                        risk_score=risk_score,
                     )
 
                 conn.commit()
@@ -110,10 +109,10 @@ class ShodanCollector:
                 conn.rollback()
                 logger.exception("Error scanning target %s", ip)
 
-        finish_scan(scan_id)
         cur.close()
         conn.close()
         logger.info("Scan batch finished")
+
 
 
 
