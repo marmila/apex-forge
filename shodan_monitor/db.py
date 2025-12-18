@@ -2,17 +2,16 @@ import os
 import uuid
 import logging
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, List, Optional
 
 import psycopg2
-from psycopg2.extras import DictCursor
-
+from psycopg2.extras import DictCursor, Json
 
 # -------------------------------------------------------------------
 # Logging
 # -------------------------------------------------------------------
 logger = logging.getLogger("shodan.db")
-
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s - %(message)s")
 
 # -------------------------------------------------------------------
 # DB config
@@ -21,7 +20,6 @@ DB_HOST = os.getenv("DB_HOST", "shodan-postgres.shodan-monitor.svc.cluster.local
 DB_NAME = os.getenv("DB_NAME", "shodan")
 DB_USER = os.getenv("DB_USER", "shodan")
 DB_PASS = os.getenv("DB_PASS", "shodan")
-
 
 # -------------------------------------------------------------------
 # Connection helpers
@@ -34,7 +32,6 @@ def get_connection():
         password=DB_PASS,
         cursor_factory=DictCursor,
     )
-
 
 @contextmanager
 def get_cursor() -> Generator:
@@ -50,7 +47,6 @@ def get_cursor() -> Generator:
         cur.close()
         conn.close()
 
-
 # -------------------------------------------------------------------
 # Schema initialization
 # -------------------------------------------------------------------
@@ -58,22 +54,19 @@ def init_db() -> None:
     logger.info("Initializing database schema")
 
     with get_cursor() as cur:
-        # ---- scan sessions
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS scan_sessions (
+        # ---- scan runs
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS scan_runs (
                 id UUID PRIMARY KEY,
-                started_at TIMESTAMPTZ NOT NULL,
+                started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 finished_at TIMESTAMPTZ,
-                targets_count INTEGER,
-                status TEXT NOT NULL
-            );
-            """
-        )
+                status TEXT NOT NULL DEFAULT 'running',
+                targets_count INTEGER
+            )
+        """)
 
         # ---- targets
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS targets (
                 id SERIAL PRIMARY KEY,
                 ip VARCHAR(45) UNIQUE NOT NULL,
@@ -82,110 +75,92 @@ def init_db() -> None:
                 asn TEXT,
                 org TEXT,
                 country TEXT
-            );
-            """
-        )
+            )
+        """)
 
         # ---- services
-        cur.execute(
-            """
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS services (
                 id SERIAL PRIMARY KEY,
-                scan_id UUID REFERENCES scan_sessions(id) ON DELETE CASCADE,
+                scan_run_id UUID REFERENCES scan_runs(id) ON DELETE CASCADE,
                 target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
                 port INTEGER NOT NULL,
-                protocol TEXT DEFAULT 'tcp',
+                transport TEXT DEFAULT 'tcp',
                 product TEXT,
                 version TEXT,
-                transport TEXT,
-                banner_hash TEXT,
-                discovered_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-            """
-        )
-
-        # ---- vulnerabilities (future-proof, già pronta)
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS vulnerabilities (
-                id SERIAL PRIMARY KEY,
-                service_id INTEGER REFERENCES services(id) ON DELETE CASCADE,
-                cve TEXT,
-                cvss REAL,
-                severity TEXT,
-                summary TEXT
-            );
-            """
-        )
+                cpe TEXT,
+                vulns JSONB,
+                risk_score INTEGER,
+                timestamp TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """)
 
         # ---- indexes
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_services_target_port
-            ON services (target_id, port);
-            """
-        )
-
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_scan_sessions_started
-            ON scan_sessions (started_at);
-            """
-        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_services_target_port ON services(target_id, port)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_scan_runs_started ON scan_runs(started_at)")
 
     logger.info("Database schema ready")
 
-
 # -------------------------------------------------------------------
-# Scan session helpers
+# Insert helpers
 # -------------------------------------------------------------------
-def start_scan(targets_count: int) -> uuid.UUID:
+def insert_scan_run(cur, targets_count: Optional[int] = None) -> uuid.UUID:
     scan_id = uuid.uuid4()
-    logger.info("Starting scan session %s", scan_id)
-
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO scan_sessions (id, started_at, targets_count, status)
-            VALUES (%s, now(), %s, %s)
-            """,
-            (scan_id, targets_count, "running"),
-        )
-
+    cur.execute(
+        """
+        INSERT INTO scan_runs (id, targets_count, status)
+        VALUES (%s, %s, 'running')
+        """,
+        (scan_id, targets_count)
+    )
+    logger.info("Inserted scan_run id=%s", scan_id)
     return scan_id
 
-
-def finish_scan(scan_id: uuid.UUID, status: str = "ok") -> None:
-    logger.info("Finishing scan session %s | status=%s", scan_id, status)
-
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            UPDATE scan_sessions
-            SET finished_at = now(), status = %s
-            WHERE id = %s
-            """,
-            (status, scan_id),
-        )
-
-
-# -------------------------------------------------------------------
-# Target helpers
-# -------------------------------------------------------------------
-def get_or_create_target(ip: str, asn=None, org=None, country=None) -> int:
-    with get_cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO targets (ip, asn, org, country)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (ip)
-            DO UPDATE SET last_seen = now()
-            RETURNING id
-            """,
-            (ip, asn, org, country),
-        )
-        target_id = cur.fetchone()["id"]
-
+def insert_target(cur, scan_run_id: uuid.UUID, ip: str, asn=None, org=None, country=None, last_update=None) -> int:
+    cur.execute(
+        """
+        INSERT INTO targets (ip, asn, org, country)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (ip) DO UPDATE SET last_seen = now()
+        RETURNING id
+        """,
+        (ip, asn, org, country)
+    )
+    target_id = cur.fetchone()["id"]
+    logger.debug("Inserted/updated target id=%s | ip=%s", target_id, ip)
     return target_id
+
+def insert_service(
+    cur,
+    scan_run_id: uuid.UUID,
+    target_id: int,
+    port: int,
+    transport: str,
+    product: Optional[str],
+    version: Optional[str],
+    cpe: Optional[str],
+    vulns: List[str],
+    risk_score: int
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO services
+        (scan_run_id, target_id, port, transport, product, version, cpe, vulns, risk_score, timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+        """,
+        (
+            scan_run_id,
+            target_id,
+            port,
+            transport,
+            product,
+            version,
+            cpe,
+            Json(vulns),
+            risk_score,
+        )
+    )
+    logger.debug("Inserted service for target_id=%s port=%s", target_id, port)
+
 
 
