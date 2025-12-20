@@ -1,4 +1,12 @@
-shodan
-psycopg2-binary
-requests
-python-dotenv
+# Core dependencies
+shodan==1.30.0
+psycopg2-binary==2.9.9
+backoff==2.2.1
+
+# Optional
+requests==2.31.0
+python-dotenv==1.0.0
+
+# For future enhancements
+# pydantic==2.5.0  # For better data validation
+# apscheduler==3.10.4  # For advanced scheduling

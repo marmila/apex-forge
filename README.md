@@ -1,107 +1,116 @@
-# shodan-sec-monitor
+## Shodan Security Monitor
+Project Overview
+shodan-sec-monitor is a Python-based collector that periodically gathers passive internet exposure data from Shodan. The project is designed to provide structured visibility on external-facing services and potential vulnerabilities, without performing any active scanning.
 
-## Project Overview
-
-`shodan-sec-monitor` is a Python-based collector that periodically gathers passive internet exposure data from Shodan. The project is designed to provide with structured visibility on external-facing services and potential vulnerabilities, without performing any active scanning.
 This project collects data in a structured PostgreSQL database, enabling further analysis, dashboards, and correlation with other observability tools.
 
----
+## What's New in This Refactor
+I've completely refactored the project to be production-ready with the following improvements:
 
-## Data Model
+1. Enhanced Database Layer (shodan_monitor/db.py)
+- Connection pooling for better performance in k3s
 
-The database is structured to capture both high-level scan runs and detailed service information:
+- Complete scan lifecycle management - scans now properly track status (running → completed/failed/timeout)
 
-- **scan_runs**: metadata for each collector batch (timestamp, duration, etc.)
-- **targets**: each IP scanned, along with organization, ASN, country, and last update info
-- **services**: each service discovered on a target (port, transport, product, version, CPE, vulnerabilities, risk score)
+- Automatic cleanup of stuck scans
 
-The tables are related as follows:
+- Better error handling and transaction management
 
-scan_runs 1---* targets 1---* services
+- Monitoring functions to check database health
 
+2. Robust Shodan API Client (shodan_monitor/shodan_client.py)
+- Exponential backoff and retry logic for rate limiting
 
-This allows correlating service-level findings with the batch in which they were collected.
+- Structured error handling with classified error types
 
----
+- Request throttling to respect Shodan API limits
 
-## Collected Data
+- Data validation and IP format checking
 
-For each target, the collector stores:
+- Better logging for debugging API issues
 
-- **Target metadata**:
-  - IP address
-  - Organization
-  - ISP
-  - Country
-  - ASN
-  - Last update timestamp from Shodan
+3. K3s-Optimized Configuration (shodan_monitor/config.py)
+- Group-based target management: TARGETS_WEB, TARGETS_DATABASE, etc.
 
-- **Service data**:
-  - Port and transport protocol
-  - Product and version (if available)
-  - CPE identifier
-  - Known vulnerabilities (CVE IDs)
-  - Computed risk score (`1 + number of vulnerabilities`)
+- Environment variable validation with helpful error messages
 
-This data allows building dashboards, tracking external service exposure, and assessing relative risk.
+- Automatic IP validation and deduplication
 
----
+- Security-aware logging - doesn't expose all IPs in production logs
 
-## Target Strategy
+- Designed for Kustomize - all configuration via environment variables
 
-Currently, targets are specified via environment variables. This allows flexible adjustment without changing code.
+4. Improved Collector (shodan_monitor/collector.py)
+- Graceful shutdown handling with signal management
 
-- Initially, only a few public resolvers (like Google and Cloudflare) were used as targets for testing.
-- The collector is designed to scale to a larger set of external targets.
-- Targets should be carefully selected to avoid scanning systems not owned by your organization (the collector only uses Shodan's passive API).
+- Progress tracking with detailed statistics
 
----
+- Error isolation - one target failure doesn't stop entire scan
 
-## Limitations
+- Batch processing for efficient database operations
 
-- **Shodan dependency**: The collector relies entirely on Shodan’s public API; missing data on Shodan will not be collected.
-- **Passive data**: No active scanning is performed. This is strictly passive, safe, and compliant with external networks.
-- **Rate limiting**: The collector respects configurable delays between API calls.
-- **Future improvements**: Integration with MongoDB or other observability pipelines for faster aggregation or historical analysis.
+- Comprehensive logging for monitoring and debugging
 
----
+5. New Utilities (shodan_monitor/utils.py)
+- Timer context manager for performance monitoring
 
-## Future Work
+- IP validation functions
 
-- Implement dashboards and reporting tools for collected data.
-- Expand target lists and make them dynamic.
-- Improve database schema to support more detailed service metadata.
-- Implement structured logging across all components.
-- Optionally, add MongoDB backend for analytics or faster ingestion of large volumes.
+- Duration formatting utilities
 
----
+- Graceful shutdown context manager
+
+6. Enhanced CLI (scripts/run_collector.py)
+- Multiple operational modes:
+
+- Continuous scanning (production)
+
+- Single scan mode (for cron jobs)
+
+- Statistics display
+
+- Configuration validation
+
+- Cleanup of stuck scans
+
+- Command-line arguments for flexibility
+
+- Better error messages and help text
+
+7. Maintenance Tools (scripts/cleanup_stuck_scans.py)
+- Database health checks
+
+- Stuck scan cleanup
+
+- Orphaned data detection
+
+- Database maintenance (VACUUM ANALYZE)
+
+- Dry-run mode for safety
+
+8. Advanced Features (Optional)
+- Risk scoring engine (shodan_monitor/risk_scorer.py) - intelligent risk assessment beyond simple vulnerability counting
+
+- Data models (shodan_monitor/models.py) - Pydantic models for data validation
+
+- Multi-platform Docker - supports ARMv7, ARM64, AMD64
+
 
 ## Environment Variables
-
-Required:
-
 ```
 SHODAN_API_KEY  # Shodan API key
-TARGETS         # Comma-separated list of IPs or hostnames
 DB_HOST         # PostgreSQL host
 DB_NAME         # PostgreSQL database name
 DB_USER         # PostgreSQL user
 DB_PASS         # PostgreSQL password
-
-Optional:
-
-INTERVAL_SECONDS  # Seconds between scan batches (default 21600)
-REQUEST_DELAY     # Seconds delay between API requests (default 1.0)
-
+TARGETS=1.2.3.4,5.6.7.8
+TARGETS_WEB=1.2.3.4,5.6.7.8
+TARGETS_DATABASE=10.0.0.1,10.0.0.2
+TARGETS_TEST=8.8.8.8,1.1.1.1
+INTERVAL_SECONDS=21600      # 6 hours (default)
+REQUEST_DELAY=1.5           # Seconds between API calls
+SHODAN_MAX_RETRIES=3        # API retry attempts
+SCAN_TIMEOUT_MINUTES=30     # Mark scans as timeout after this
+ENABLE_CLEANUP=true         # Auto-cleanup stuck scans
+LOG_LEVEL=INFO             # DEBUG, INFO, WARNING, ERROR
 ```
-## Notes
-
-All components are containerized, with PYTHONPATH=/app configured for Python imports.
-The collector is stateless between runs, all state is persisted in PostgreSQL.
-Suitable for Kubernetes deployment with configurable PVC and environment variables.
-The collector design allows multiple instances to be deployed safely with separate scan batches.
-
-## Disclaimer
-
-This tool does not perform any active scanning. It only collects publicly available information from Shodan.
-Ensure that all usage complies with organizational policies and Shodan’s API terms of service.
