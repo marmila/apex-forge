@@ -1,7 +1,7 @@
 ## Shodan Security Monitor
 A tool that passively monitors your external attack surface using Shodan's API. No active scanning - just collects existing public data and stores it in PostgreSQL for analysis.
 
-## What It Does
+### What It Does
 Passively collects Shodan data about your IPs
 Stores everything in PostgreSQL (targets, services, vulnerabilities)
 Calculates risk scores intelligently
@@ -9,7 +9,7 @@ Runs continuously or on schedule
 
 
 
-## Quick Start
+### Quick Start
 1. Deploy with Docker
 ```
 docker run -d \
@@ -36,14 +36,14 @@ secretGenerator:
   - SHODAN_API_KEY="your_key"
   - DB_PASS="shodan"
   ```
-## What Gets Stored
+### What Gets Stored
 Table	What it holds
 scan_runs	Scan history, status, timing
 targets	IPs, org, country, ASN
 services	Ports, products, versions, vulnerabilities
 ## Minimal Config
 
-# Required
+### Required
 ```
 SHODAN_API_KEY=your_key_here
 DB_HOST=postgres-host
@@ -53,29 +53,29 @@ DB_PASS=shodan
 TARGETS_WEB=1.2.3.4,5.6.7.8  # Your IPs here
 ```
 
-# Optional (defaults shown)
+### Optional (defaults shown)
 ```
 INTERVAL_SECONDS=21600  # 6 hours
 REQUEST_DELAY=1.0       # Seconds between API calls
 LOG_LEVEL=INFO
 ```
-## Usage
+### Usage
 
-# Validate your setup
+### Validate your setup
 ```python scripts/run_collector.py --validate```
 
-# Run once (for cron jobs)
+### Run once (for cron jobs)
 ``` python scripts/run_collector.py --once```
 
-# Run continuously
+### Run continuously
 ```python scripts/run_collector.py```
 
-# Show stats
+### Show stats
 ```python scripts/run_collector.py --stats```
 
-# Cleanup stuck scans
+### Cleanup stuck scans
 ```python scripts/clean_stuck_scans.py --cleanup-stuck```
-# Useful SQL Queries
+### Useful SQL Queries
 ```
 -- High-risk services
 SELECT t.ip, s.port, s.product, s.risk_score
@@ -97,7 +97,7 @@ FROM services s
 JOIN targets t ON s.target_id = t.id
 WHERE jsonb_array_length(s.vulns) > 0;
 ```
-## Project Structure
+### Project Structure
 ```
 shodan-sec-monitor/
 ├── Dockerfile          # Multi-arch build
@@ -111,28 +111,28 @@ shodan-sec-monitor/
 ```
 ## Multi-Plat
 
-# Build for ARM and AMD64
+### Build for ARM and AMD64
 ```./build.sh```
 
-# Or manually
+### Or manually
 ```docker buildx build \
   --platform linux/amd64,linux/arm64,linux/arm/v7 \
   -t your-registry/shodan-sec-monitor:latest \
   --push .
 ```
-## Important Notes
+### Important Notes
 Passive only - uses Shodan API, no active scanning
 Rate limited - respects Shodan's API limits
 IP validation - checks all targets before scanning
 
-# Test config
+### Test config
 ```python scripts/run_collector.py --validate```
 
-# See logs
+### See logs
 ```kubectl logs -f deployment/shodan-collector```
 
-# Check database
+### Check database
 ```python scripts/run_collector.py --stats```
 
-# License
+### License
 MIT License. Use responsibly - only scan IPs you own.
