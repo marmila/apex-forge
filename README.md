@@ -25,7 +25,7 @@ The system is designed to handle high-volume data ingestion from the Shodan Sear
 
 * **Language**: Python 3.10+
 * **Databases**: PostgreSQL 14+, MongoDB 6.0+
-* **Infrastructure**: Designed for Docker and K3s (Kubernetes)
+* **Infrastructure**: Designed for Docker and K3s
 * **Monitoring**: Prometheus, Grafana, Alertmanager
 
 ## Configuration
