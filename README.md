@@ -47,8 +47,11 @@ SIS uses a YAML-based profile system to define intelligence targets.
 ## Required Environment Variables
 
 ```SHODAN_API_KEY```: Shodan Freelancer/Corporate API Key.
+
 ```DB_TYPE```: Set to 'polyglot' for dual-database mode.
+
 ```POSTGRES_URL```: Connection string for PostgreSQL analytics.
+
 ```MONGO_URL```: Connection string for MongoDB raw storage.
 
 ## Deployment
