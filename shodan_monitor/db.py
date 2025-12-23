@@ -2,7 +2,7 @@ import os
 import logging
 from contextlib import contextmanager
 from typing import Generator, List, Optional, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 
 import psycopg2
 from psycopg2.extras import DictCursor, Json
@@ -77,14 +77,13 @@ def get_pg_cursor(autocommit: bool = False) -> Generator:
 def save_raw_banner(banner: Dict[str, Any], profile_name: str):
     """
     Store the complete Shodan JSON banner into MongoDB.
-    Enriches the document with metadata for future forensic queries.
+    Uses timezone-aware UTC datetime for the collection timestamp.
     """
     try:
         collection = get_mongo_collection()
-        # Deep copy-like injection of metadata
         banner['sis_metadata'] = {
             'profile_name': profile_name,
-            'collected_at': datetime.utcnow(),
+            'collected_at': datetime.now(timezone.utc),
             'processed': False
         }
         collection.insert_one(banner)
@@ -111,16 +110,13 @@ def update_intel_stats(profile_name: str, count: int, countries: Dict[str, int])
                 profile_name,
                 count,
                 Json(countries),
-                datetime.utcnow()
+                datetime.now(timezone.utc)
             ))
     except Exception as e:
         logger.error(f"Failed to update intel stats for {profile_name}: {e}")
 
 def log_intel_history(profile_name: str, count: int):
-    """
-    Record a time-series data point for threat velocity analysis.
-    This table powers historical line charts in Grafana.
-    """
+    """Record a time-series data point for threat velocity analysis."""
     query = """
         INSERT INTO intel_history (profile_name, count)
         VALUES (%s, %s)
@@ -131,13 +127,10 @@ def log_intel_history(profile_name: str, count: int):
     except Exception as e:
         logger.error(f"Failed to log intel history for {profile_name}: {e}")
 
-# --- Maintenance and Initialization ---
+# --- Initialization and Maintenance ---
 
 def init_databases():
-    """
-    Initialize the PostgreSQL schema for the new Threat Intelligence focus.
-    Includes tables for current snapshots and historical tracking.
-    """
+    """Initialize the PostgreSQL schema for the Threat Intelligence focus."""
     commands = [
         """
         CREATE TABLE IF NOT EXISTS intel_stats (
@@ -166,10 +159,7 @@ def init_databases():
         raise
 
 def get_database_stats() -> Dict[str, Any]:
-    """
-    Fetch high-level overview of the collected intelligence.
-    Useful for health checks and status reporting.
-    """
+    """Fetch high-level overview of the collected intelligence."""
     stats = {}
     try:
         with get_pg_cursor() as cur:
@@ -183,10 +173,7 @@ def get_database_stats() -> Dict[str, Any]:
     return stats
 
 def close_connections():
-    """
-    Gracefully close connection pools for both PostgreSQL and MongoDB.
-    To be called during application shutdown.
-    """
+    """Close all database connections (call during graceful shutdown)."""
     global _pg_pool, _mongo_client
     if _pg_pool:
         _pg_pool.closeall()
