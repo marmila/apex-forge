@@ -1,21 +1,32 @@
 #!/bin/bash
-# Multi-platform build script for Shodan Security Monitor
+# Multi-platform build script for Shodan Intelligence Sentinel
 
+# Stop execution if any command fails
 set -e
 
-IMAGE_NAME="your-registry/shodan-sec-monitor"
-VERSION="1.0.0"
+# Configuration - Update with your actual registry
+IMAGE_NAME="ghcr.io/marmila/shodan-intel-sentinel"
+VERSION="2.0.0"
 
-# Platforms to build for
-PLATFORMS="linux/amd64,linux/arm64,linux/arm/v7"
+# Platforms to build for (Optimized for modern 64-bit clusters like k3s)
+PLATFORMS="linux/amd64,linux/arm64"
 
-echo "Building Shodan Security Monitor for platforms: $PLATFORMS"
+echo "--------------------------------------------------------"
+echo "Building Shodan Intelligence Sentinel v${VERSION}"
+echo "Platforms: ${PLATFORMS}"
+echo "--------------------------------------------------------"
 
-# Build using Docker Buildx
+# Ensure buildx is ready
+docker buildx create --use --name sentinel-builder || true
+
+# Build and push using Docker Buildx
 docker buildx build \
     --platform ${PLATFORMS} \
     --tag ${IMAGE_NAME}:${VERSION} \
     --tag ${IMAGE_NAME}:latest \
-    --push .  # Remove --push if you don't want to push immediately
+    --push .
 
-echo "Build completed successfully!"
+echo "--------------------------------------------------------"
+echo "Build and Push completed successfully!"
+echo "Image: ${IMAGE_NAME}:${VERSION}"
+echo "--------------------------------------------------------"
