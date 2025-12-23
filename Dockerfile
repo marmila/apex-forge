@@ -1,36 +1,53 @@
+# Use a slim version of Python for a smaller image footprint
 FROM python:3.11-slim
+
+# Build-time arguments for multi-platform support
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
+
+# Set shell for better error handling
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 WORKDIR /app
 
-# Install system dependencies for PostgreSQL and building
-RUN apt-get update && apt-get install -y \
+# Install system dependencies
+# libpq-dev is required for psycopg2, gcc and python3-dev for building wheels
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy requirements first to leverage Docker layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# --no-cache-dir reduces image size
+# pip will automatically fetch the correct wheel for the target architecture
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application structure
+# Ensure profiles.yaml is copied if it's in the root or shodan_monitor/
 COPY shodan_monitor/ ./shodan_monitor/
 COPY scripts/ ./scripts/
+COPY profiles.yaml ./profiles.yaml
 
-# Set Python path
-ENV PYTHONPATH=/app
+# Set Python path to ensure module imports work correctly
+ENV PYTHONPATH=/app \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Create non-root user for security
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+# Security: Create and use a non-root user
+RUN useradd -m -u 1000 appuser && \
+    chown -R appuser:appuser /app
 USER appuser
 
-# Health check (optional but recommended)
+# Health check verifies the python environment and core dependencies are functional
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)" || exit 1
+    CMD python3 -c "import psycopg2; import pymongo; import pydantic; sys.exit(0)" || exit 1
 
-# Run the collector
+# Start the collector
 CMD ["python", "scripts/run_collector.py"]
 
 
