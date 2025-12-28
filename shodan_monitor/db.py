@@ -164,7 +164,7 @@ def log_intel_history(profile_name: str, count: int):
 # --- Initialization and Maintenance ---
 
 def init_databases():
-    """Initialize the PostgreSQL schema."""
+    """Initialize PostgreSQL schema and create views optimized for Grafana visualization."""
     commands = [
         """
         CREATE TABLE IF NOT EXISTS intel_stats (
@@ -181,13 +181,53 @@ def init_databases():
             count INTEGER,
             observed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_exposed_assets_by_country AS
+        SELECT
+            s.profile_name,
+            t.country_code,
+            (t.country_count)::integer AS asset_count,
+            s.last_updated
+        FROM intel_stats s,
+            jsonb_each_text(s.country_dist) AS t(country_code, country_count)
+        WHERE s.country_dist != '{}' AND t.country_count IS NOT NULL;
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_exposure_trend AS
+        SELECT
+            observed_at::date AS date,
+            SUM(count) AS new_assets_daily,
+            SUM(SUM(count)) OVER (ORDER BY observed_at::date) AS total_assets_cumulative
+        FROM intel_history
+        GROUP BY observed_at::date
+        ORDER BY date;
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_exposure_trend_by_profile AS
+        SELECT
+            profile_name,
+            observed_at::date AS date,
+            count AS new_assets_daily,
+            SUM(count) OVER (PARTITION BY profile_name ORDER BY observed_at::date) AS total_assets_cumulative
+        FROM intel_history
+        GROUP BY profile_name, observed_at::date, count
+        ORDER BY profile_name, date;
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_current_summary AS
+        SELECT
+            COUNT(*) AS active_profiles,
+            SUM(total_count) AS total_exposed_assets,
+            MAX(last_updated) AS last_collection_cycle
+        FROM intel_stats;
         """
     ]
     try:
         with get_pg_cursor(autocommit=True) as cur:
             for cmd in commands:
                 cur.execute(cmd)
-        logger.info("Threat Intelligence database schemas initialized")
+        logger.info("PostgreSQL schemas and Grafana views initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
