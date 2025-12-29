@@ -1,67 +1,82 @@
-# Shodan Intelligence Sentinel (SIS)
+# ApexForge
 
-Shodan Intelligence Sentinel is a modular threat intelligence engine designed for global exposure tracking and vulnerability analytics. Unlike traditional asset monitors, SIS pivots towards proactive threat hunting by leveraging the Shodan Search API to analyze large-scale attack surfaces, command-and-control (C2) infrastructures, and industrial control systems (ICS).
+**ApexForge** is an open-source **Continuous Threat Exposure Management (CTEM)** platform designed for proactive discovery, enrichment, risk scoring, and monitoring of internet-facing assets and vulnerabilities.
 
-The project implements a polyglot persistence strategy, utilizing PostgreSQL for structured time-series analytics and MongoDB for raw data retention, providing a robust foundation for historical forensic analysis.
+Built on Shodan as the primary intelligence source — with built-in support for InternetDB enrichment and future extensions (CVEDB, VirusTotal, Censys) — ApexForge delivers:
 
-## Core Intelligence Modules
+- **Polyglot persistence**: MongoDB for raw banner storage, PostgreSQL for structured analytics and trends
+- **ML-enhanced risk scoring** and anomaly detection (PyTorch + scikit-learn)
+- **Full observability**: Prometheus metrics, structured JSON logs (Kibana), Grafana dashboards, Alertmanager alerts
+- **Production-grade security**: HashiCorp Vault + External Secrets for API keys and DB credentials
+- **Edge-optimized**: Multi-platform Docker images.
 
-* **Exposed Data Analytics**: Tracking of unauthenticated database instances including MongoDB, Elasticsearch, and Redis.
-* **C2 Infrastructure Hunting**: Identification of Command & Control frameworks through SSL/TLS fingerprints and banner hashing (e.g., Cobalt Strike, Metasploit, PoshC2).
-* **Industrial Guard**: Global monitoring of ICS/SCADA protocols such as Modbus, Siemens S7, and BACnet.
-* **CMS Exposure Trends**: Real-time analysis of patch-rates and vulnerabilities across major CMS platforms like WordPress and Drupal.
 
-## Architecture and Data Strategy
+## Core Threat Hunting Modules
 
-The system is designed to handle high-volume data ingestion from the Shodan Search API (Freelancer Plan) with a focus on data integrity and observability.
+- Unauthenticated databases (MongoDB, Redis, Elasticsearch)
+- C2 infrastructure (Cobalt Strike beacons, JARM fingerprints)
+- Industrial control systems (Modbus, S7, BACnet)
+- Vulnerable web applications (WordPress, phpMyAdmin)
+- Emerging risks: exposed AI/ML services (Flask, TensorBoard on port 5000–9000)
 
-1. **Extraction**: Asynchronous collection using the Shodan Search Cursor to handle large result sets without pagination overhead.
-2. **Polyglot Storage**:
-    * **PostgreSQL**: Stores normalized metadata, country distribution, and risk-score trends. Optimized for Grafana visualization.
-    * **MongoDB**: Retains full, unstructured JSON banners for retroactive threat hunting and forensic verification.
-3. **Observability**: Native integration with Prometheus for security metrics and Alertmanager for real-time notification on threat spikes.
+## Architecture
+
+1. **Collection** — Incremental Shodan searches using cursor API
+2. **Enrichment** — InternetDB (free), future: CVE details, VirusTotal
+3. **Storage**
+   - MongoDB → raw banners (forensic analysis)
+   - PostgreSQL → aggregated stats, country distribution, time-series trends
+4. **Analysis** — ML-based risk scoring and anomaly detection
+5. **Observability** — Prometheus, Grafana, Loki/Tempo, Kibana (ELK stack)
+6. **Alerting** — Alertmanager notifications on exposure spikes
 
 ## Tech Stack
 
-* **Language**: Python 3.10+
-* **Databases**: PostgreSQL 14+, MongoDB 6.0+
-* **Infrastructure**: Designed for Docker and K3s
-* **Monitoring**: Prometheus, Grafana, Alertmanager
+- Python 3.11
+- PostgreSQL 15 + MongoDB
+- Docker (multi-arch: amd64/arm64)
+- k3s + Longhorn + Vault + External Secrets + Flux CD
+- Prometheus, Grafana, Alertmanager, Kibana
+- PyTorch, scikit-learn (ML risk engine)
 
 ## Configuration
 
-SIS uses a YAML-based profile system to define intelligence targets.
+Threat profiles defined in `profiles.yaml`:
 
 ```
-# Example Intelligence Profile
-- name: cobalt_strike_tracker
-  query: "hash:-2007783223"
-  severity: high
-  frequency: 6h
+intelligence_profiles:
+  - name: unauthenticated_mongodb
+    query: "product:mongodb port:27017 -authentication"
+    severity: critical
+    tags: [database, leak]
 
-- name: exposed_industrial_modbus
-  query: "port:502"
-  severity: critical
-  frequency: 12h
+  - name: cobalt_strike_c2
+    query: "hash:-2007783223"
+    severity: high
+    tags: [c2, malware]
+
+  - name: exposed_ai_services
+    query: "port:5000..9000 (flask OR tensorboard OR jupyter)"
+    severity: high
 ```
-## Required Environment Variables
 
-```SHODAN_API_KEY```: Shodan Freelancer/Corporate API Key.
 
-```DB_TYPE```: Set to 'polyglot' for dual-database mode.
+## Build and push multi-platform image
+./build.sh
 
-```POSTGRES_URL```: Connection string for PostgreSQL analytics.
+## Update deployment image tag and apply
 
-```MONGO_URL```: Connection string for MongoDB raw storage.
+```kubectl apply -f k8s/deployment.yaml```
 
-## Deployment
-### Kubernetes (k3s)
-The collector is optimized for k3s deployments, utilizing ConfigMaps for profile management and Secrets for API credentials. It supports graceful shutdown via SIGTERM to ensure database connection pooling is handled correctly.
+## Security & Ethics
+This tool performs passive intelligence gathering using publicly indexed data from Shodan.
+It is intended strictly for defensive security research, threat hunting, and exposure monitoring.
+Users must comply with:
 
-```kubectl apply -f k8s/sentinel-deployment.yaml```
-+
-## Security and Ethics
-This tool is strictly for defensive security research and threat intelligence gathering. It operates passively by querying Shodan's indexed data. Users must comply with Shodan's Terms of Service and ensure all intelligence activities remain within legal boundaries.
+- Shodan Terms of Service
+- All applicable laws and regulations
+
+No active scanning or exploitation is performed.
 
 ## License
-MIT License.
+MIT License

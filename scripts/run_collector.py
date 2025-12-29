@@ -1,21 +1,22 @@
 import argparse
 import logging
 import sys
-from shodan_monitor.config import get_config
-from shodan_monitor.shodan_client import ShodanClient
-from shodan_monitor.collector import ShodanCollector
-from shodan_monitor.db import get_database_stats
+import os
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s"
-)
-logger = logging.getLogger("shodan.runner")
+from apex_forge.config import get_config
+from apex_forge.shodan_client import ShodanClient
+from apex_forge.collector import ShodanCollector
+from apex_forge.db import get_database_stats
+from apex_forge.utils import setup_structured_logging
+
+# Setup structured JSON logging for Kibana/ELK
+setup_structured_logging(level=os.getenv("LOG_LEVEL", "INFO"))
+
+logger = logging.getLogger("apexforge.collector")
 
 def parse_args():
     """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="Shodan Intelligence Sentinel Runner")
+    parser = argparse.ArgumentParser(description="ApexForge Collector Runner")
     parser.add_argument(
         "--once",
         action="store_true",
@@ -31,10 +32,10 @@ def parse_args():
 def show_stats():
     """Display current intelligence statistics from the database."""
     stats = get_database_stats()
-    print("\n--- Shodan Intelligence Sentinel Stats ---")
-    print(f"Active Threat Profiles:   {stats.get('active_profiles', 0)}")
-    print(f"Total Exposed Assets:     {stats.get('total_exposed_assets', 0)}")
-    print("------------------------------------------\n")
+    print("\n=== ApexForge Intelligence Stats ===")
+    print(f"Active Threat Profiles:     {stats.get('active_profiles', 0)}")
+    print(f"Total Exposed Assets:       {stats.get('total_exposed_assets', 0)}")
+    print("========================================\n")
 
 def main():
     args = parse_args()
@@ -45,10 +46,12 @@ def main():
         sys.exit(0)
 
     if not config.shodan.api_key:
-        logger.error("SHODAN_API_KEY is missing in environment variables.")
+        logger.error("SHODAN_API_KEY is missing from environment (injected via Vault secret 'shodan-secret')")
         sys.exit(1)
 
-    # Initialize components
+    logger.info("Initializing ApexForge collector")
+
+    # Initialize Shodan client
     client = ShodanClient(
         api_key=config.shodan.api_key,
         max_retries=config.shodan.max_retries,
@@ -59,13 +62,15 @@ def main():
 
     try:
         if args.once:
+            logger.info("Running single collection cycle (--once)")
             collector.run_once()
         else:
+            logger.info("Starting continuous collection loop")
             collector.run()
     except KeyboardInterrupt:
-        logger.info("Runner interrupted by user")
+        logger.info("ApexForge collector interrupted by user")
     except Exception as e:
-        logger.error(f"Critical error in runner: {e}")
+        logger.error(f"Critical error in ApexForge collector: {e}", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
