@@ -46,7 +46,7 @@ class ShodanConfig:
     api_key: str = os.getenv("SHODAN_API_KEY", "")
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     request_delay: float = float(os.getenv("REQUEST_DELAY", "1.0"))
-    # In un'ottica Threat Intel, l'intervallo è globale tra i profili
+    # In a Threat Intel perspective, the interval is global across profiles".
     scan_interval: int = int(os.getenv("INTERVAL_SECONDS", "21600"))
 
 @dataclass
