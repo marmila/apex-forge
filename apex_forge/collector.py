@@ -1,7 +1,7 @@
 import time
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, Optional
 from dataclasses import dataclass, field
 
 from apex_forge.config import get_config
@@ -12,146 +12,165 @@ from apex_forge.db import (
     log_intel_history,
     close_connections,
     init_databases,
-    get_last_checkpoint
+    get_last_checkpoint,
 )
-from apex_forge.utils import GracefulShutdown, Timer, format_duration
+from apex_forge.utils import GracefulShutdown, Timer
+from apex_forge.risk_scorer import RiskScorer
+from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("apexforge.collector")
+
+# Prometheus metrics
+BANNERS_PROCESSED = Counter(
+    "apexforge_banners_processed_total",
+    "Total number of banners processed",
+    ["profile", "risk_level"]
+)
+BANNERS_ENRICHED = Counter(
+    "apexforge_banners_enriched_total",
+    "Number of banners enriched with InternetDB",
+    ["profile"]
+)
+COLLECTION_DURATION = Histogram(
+    "apexforge_collection_duration_seconds",
+    "Duration of collection cycle per profile",
+    ["profile"]
+)
+CURRENT_RISK_GAUGE = Gauge(
+    "apexforge_current_high_critical_assets",
+    "Current number of high/critical risk assets across all profiles"
+)
 
 @dataclass
 class IntelligenceStats:
-    """Statistics for an intelligence collection cycle."""
     profile_name: str
     total_processed: int = 0
     new_banners: int = 0
     errors: int = 0
+    high_critical_count: int = 0
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
-class ShodanCollector:
+class ApexForgeCollector:
     """
-    Main collector for Shodan Intelligence Sentinel.
-    Iterates through threat profiles and performs global searches with incremental support.
+    Main collector for ApexForge – threat exposure hunting & risk analysis.
     """
 
     def __init__(self, shodan_client: ShodanClient):
         self.client = shodan_client
         self.config = get_config()
+        self.risk_scorer = RiskScorer()
         init_databases()
 
-    def run(self):
-        """Main execution loop optimized for k3s."""
-        logger.info("Starting Shodan Intelligence Sentinel collector loop")
-
-        with GracefulShutdown() as shutdown:
-            while not shutdown.should_exit:
-                loop_timer = Timer("main_loop")
-                with loop_timer:
-                    self.collect_all_profiles(shutdown)
-
-                # --- SHODAN QUOTA REPORT (v2.0.2) ---
-                if not shutdown.should_exit:
-                    try:
-                        api_info = self.client.get_api_info()
-                        credits = api_info.get('query_credits', 'N/A')
-                        plan = api_info.get('plan', 'N/A')
-
-                        logger.info("--- SHODAN QUOTA REPORT ---")
-                        logger.info(f"Plan: {plan.upper()}")
-                        logger.info(f"Remaining Query Credits: {credits}")
-                        logger.info("---------------------------")
-                    except Exception as e:
-                        logger.warning(f"Could not retrieve Shodan quota report: {e}")
-                # ------------------------------------
-
-                if shutdown.should_exit:
-                    break
-
-                interval = self.config.shodan.scan_interval
-                logger.info(f"Cycle completed in {format_duration(loop_timer.duration)}. "
-                            f"Sleeping for {interval} seconds...")
-
-                wait_until = time.time() + interval
-                while time.time() < wait_until and not shutdown.should_exit:
-                    time.sleep(5)
-
-        logger.info("Collector shutting down gracefully")
-        close_connections()
+        # Start Prometheus metrics server (port 8000 – expose via k8s Service later)
+        start_http_server(8000)
+        logger.info("Prometheus metrics server started on :8000")
 
     def collect_all_profiles(self, shutdown: GracefulShutdown):
-        """Iterate through all configured intelligence profiles."""
         profiles = self.config.load_profiles()
+        if not profiles:
+            logger.warning("No intelligence profiles loaded – check profiles.yaml")
+            return
 
-        for profile in profiles:
+        for profile_dict in profiles:
             if shutdown.should_exit:
                 break
+            name = profile_dict["name"]
+            base_query = profile_dict["query"]
+            enrich_internetdb = profile_dict.get("enrich_with_internetdb", True)
 
-            profile_name = profile.get('name', 'unknown')
-            query = profile.get('query')
+            stats = IntelligenceStats(profile_name=name)
+            with COLLECTION_DURATION.labels(profile=name).time():
+                self._process_profile(name, base_query, stats, shutdown, enrich_internetdb)
 
-            if not query:
-                logger.warning(f"Profile {profile_name} has no query. Skipping.")
-                continue
+            # Update global gauge for high/critical assets
+            if stats.high_critical_count > 0:
+                CURRENT_RISK_GAUGE.inc(stats.high_critical_count)
 
-            logger.info(f"Processing intelligence profile: {profile_name}")
-            self._process_profile(profile, shutdown)
+    def _process_profile(
+        self,
+        name: str,
+        base_query: str,
+        stats: IntelligenceStats,
+        shutdown: GracefulShutdown,
+        enrich_internetdb: bool
+    ):
+        logger.info(f"Starting collection for profile: {name} | Query: {base_query}")
 
-    def _process_profile(self, profile: Dict[str, Any], shutdown: GracefulShutdown):
-        """Executes incremental search for a profile and updates storage."""
-        name = profile['name']
-        base_query = profile['query']
-        stats = IntelligenceStats(profile_name=name)
-
-        # Check for existing checkpoint to enable incremental ingest
         last_checkpoint = get_last_checkpoint(name)
-        active_query = base_query
-
         if last_checkpoint:
-            # Shodan date format for filters is DD/MM/YYYY
             date_str = last_checkpoint.strftime("%d/%m/%Y")
             active_query = f"{base_query} after:{date_str}"
-            logger.info(f"Using incremental filter for {name}: {date_str}")
+            logger.info(f"Incremental mode – using date filter: after:{date_str}")
         else:
-            logger.info(f"No checkpoint found for {name}. Performing full collection.")
+            active_query = base_query
+            logger.info("No checkpoint – performing full collection")
 
-        country_distribution = {}
+        country_distribution: Dict[str, int] = {}
 
         try:
             for banner in self.client.search_intel(active_query):
                 if shutdown.should_exit:
                     break
 
+                # Risk scoring
+                risk_analysis = self.risk_scorer.analyze_banner(banner)
+                banner.setdefault("sis_metadata", {})["risk_analysis"] = risk_analysis
+
+                # InternetDB enrichment (free, no credits)
+                if enrich_internetdb:
+                    ip = banner.get("ip_str")
+                    if ip:
+                        enrichment = self.client.get_internetdb_data(ip)
+                        if enrichment:
+                            banner["internetdb_enrichment"] = enrichment
+                            BANNERS_ENRICHED.labels(profile=name).inc()
+
+                # Save to MongoDB
                 save_raw_banner(banner, name)
 
+                # Stats
                 stats.total_processed += 1
-                location = banner.get('location')
-                country_code = location.get('country_code', 'Unknown') if location else 'Unknown'
+                if risk_analysis["level"] in ("HIGH", "CRITICAL"):
+                    stats.high_critical_count += 1
 
+                # Country distribution (safe get)
+                location = banner.get("location", {})
+                country_code = location.get("country_code", "Unknown")
                 country_distribution[country_code] = country_distribution.get(country_code, 0) + 1
 
-                if stats.total_processed % 100 == 0:
-                    logger.info(f"[{name}] Processed {stats.total_processed} banners...")
+                BANNERS_PROCESSED.labels(profile=name, risk_level=risk_analysis["level"]).inc()
 
-            logger.info(f"Completed profile {name}: {stats.total_processed} banners processed.")
+                if stats.total_processed % 100 == 0:
+                    logger.info(f"[{name}] Processed {stats.total_processed} banners (High/Critical: {stats.high_critical_count})")
+
+            logger.info(f"Completed profile {name}: {stats.total_processed} banners, {stats.high_critical_count} high/critical")
 
         except Exception as e:
-            logger.error(f"Error processing profile {name} at banner {stats.total_processed}: {e}")
+            logger.error(f"Error processing profile {name} at banner {stats.total_processed}: {e}", exc_info=True)
             stats.errors += 1
 
         finally:
-            # v2.0.3: Always save progress if at least one banner was processed.
-            # This ensures checkpoints are updated even if the API cursor fails mid-run.
             if stats.total_processed > 0:
-                logger.info(f"Saving partial progress for {name}: {stats.total_processed} assets.")
                 update_intel_stats(name, stats.total_processed, country_distribution)
                 log_intel_history(name, stats.total_processed)
+                # Optional: store high/critical count in a new PG column later
+
+    def run(self):
+        logger.info("Starting ApexForge continuous collection loop")
+        with GracefulShutdown() as shutdown:
+            while not shutdown.should_exit:
+                loop_timer = Timer("full_cycle")
+                with loop_timer:
+                    self.collect_all_profiles(shutdown)
+
+                if not shutdown.should_exit:
+                    time.sleep(self.config.shodan.scan_interval)
 
     def run_once(self):
-        """Run a single collection cycle across all profiles."""
-        logger.info("Executing single collection run")
+        logger.info("Executing single collection run (--once)")
         with GracefulShutdown() as shutdown:
             self.collect_all_profiles(shutdown)
         close_connections()
-
 
 
 

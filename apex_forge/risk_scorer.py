@@ -1,12 +1,13 @@
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any
 
-logger = logging.getLogger(__name__)
+# Updated logger name for consistency across ApexForge
+logger = logging.getLogger("apexforge.risk")
 
 class RiskScorer:
     """
-    Engine to evaluate risk scores for Shodan banners.
-    Analyzes vulnerabilities, open ports, and service metadata.
+    Risk scoring engine for ApexForge.
+    Evaluates Shodan banners based on vulnerabilities, open ports, tags, and metadata.
     """
 
     # Weights for risk calculation
@@ -14,6 +15,7 @@ class RiskScorer:
     WEIGHT_CRITICAL_PORTS = 30
     WEIGHT_TAGS = 20
 
+    # Expanded critical ports – includes classic + ICS/SCADA + emerging AI/ML services
     CRITICAL_PORTS = {
         21: "FTP",
         22: "SSH",
@@ -23,7 +25,16 @@ class RiskScorer:
         3306: "MySQL",
         3389: "RDP",
         5900: "VNC",
-        27017: "MongoDB"
+        27017: "MongoDB",
+        # ICS/SCADA
+        502: "Modbus",
+        102: "Siemens S7",
+        47808: "BACnet",
+        # Emerging / AI-related (often exposed)
+        5000: "Flask / Docker Registry / UPnP",
+        8080: "HTTP Alternate (common proxy/dev)",
+        9200: "Elasticsearch",
+        6379: "Redis"
     }
 
     def __init__(self):
@@ -38,7 +49,6 @@ class RiskScorer:
         # 1. Vulnerability Factor
         vulns = banner.get('vulns', [])
         if vulns:
-            # If vulnerabilities are present, increase score significantly
             score += self.WEIGHT_VULNS
             logger.debug(f"Vulnerabilities found: {len(vulns)}")
 
@@ -48,16 +58,22 @@ class RiskScorer:
             score += self.WEIGHT_CRITICAL_PORTS
             logger.debug(f"Critical port detected: {port} ({self.CRITICAL_PORTS[port]})")
 
-        # 3. Tags and Metadata Factor
+        # 3. Tags and Metadata Factor – broader detection
         tags = banner.get('tags', [])
-        if 'database' in tags or 'cloud' in tags:
-            score += self.WEIGHT_TAGS * 0.5
+        tag_bonus = 0.0
+        if any(t in tags for t in ['database', 'cloud', 'iot', 'ics', 'scada']):
+            tag_bonus += self.WEIGHT_TAGS * 0.7
+        if 'auth-bypass' in tags or 'anonymous' in tags:
+            tag_bonus += self.WEIGHT_TAGS * 0.5
 
+        score += tag_bonus
+
+        # Reduce score for known honeypots
         if 'honeypot' in tags:
-            # Reduce score for honeypots as they are intentional decoys
             score -= 40
+            logger.debug("Honeypot tag detected – reducing score")
 
-        # Normalize score between 0 and 100
+        # Normalize to 0–100
         return max(0.0, min(100.0, score))
 
     def get_risk_level(self, score: float) -> str:
@@ -74,13 +90,16 @@ class RiskScorer:
 
     def analyze_banner(self, banner: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Perform a full risk analysis on a banner.
-        Returns a summary of risk findings.
+        Perform full risk analysis on a banner.
+        Returns a summary used in storage and metrics.
         """
         score = self.calculate_score(banner)
+        level = self.get_risk_level(score)
+
         return {
-            "score": score,
-            "level": self.get_risk_level(score),
+            "score": round(score, 2),  # Nicer precision
+            "level": level,
             "critical_port": banner.get('port') in self.CRITICAL_PORTS,
-            "has_vulns": len(banner.get('vulns', [])) > 0
+            "has_vulns": len(banner.get('vulns', [])) > 0,
+            "tags_triggered": [t for t in banner.get('tags', []) if t in ['database', 'cloud', 'iot', 'ics', 'scada', 'auth-bypass', 'anonymous', 'honeypot']]
         }

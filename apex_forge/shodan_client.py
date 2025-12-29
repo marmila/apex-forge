@@ -8,7 +8,7 @@ import shodan
 import requests
 from shodan.exception import APIError
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("apexforge.shodan")
 
 class ShodanErrorType(Enum):
     RATE_LIMITED = "rate_limited"
