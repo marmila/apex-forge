@@ -8,6 +8,7 @@ import yaml
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from apex_forge.enrichment import Enricher
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class MongoConfig:
 class ShodanConfig:
     """Shodan API configuration."""
     api_key: str = os.getenv("SHODAN_API_KEY", "")
+    vt_api_key: str = os.getenv("VIRUSTOTAL_API_KEY", "")
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     request_delay: float = float(os.getenv("REQUEST_DELAY", "1.0"))
     # In un'ottica Threat Intel, l'intervallo è globale tra i profili

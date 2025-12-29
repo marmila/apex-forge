@@ -16,6 +16,7 @@ from apex_forge.db import (
 )
 from apex_forge.utils import GracefulShutdown, Timer
 from apex_forge.risk_scorer import RiskScorer
+from apex_forge.enrichment import Enricher  # <-- NEW: Multi-source enrichment
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 logger = logging.getLogger("apexforge.collector")
@@ -59,6 +60,7 @@ class ApexForgeCollector:
         self.client = shodan_client
         self.config = get_config()
         self.risk_scorer = RiskScorer()
+        self.enricher = Enricher(vt_api_key=self.config.shodan.vt_api_key)  # Multi-source enricher
         init_databases()
 
         # Start Prometheus metrics server (port 8000 – expose via k8s Service later)
@@ -112,11 +114,11 @@ class ApexForgeCollector:
                 if shutdown.should_exit:
                     break
 
-                # Risk scoring
+                # 1. Risk scoring
                 risk_analysis = self.risk_scorer.analyze_banner(banner)
                 banner.setdefault("sis_metadata", {})["risk_analysis"] = risk_analysis
 
-                # InternetDB enrichment
+                # 2. InternetDB enrichment (free)
                 if enrich_internetdb:
                     ip = banner.get("ip_str")
                     if ip:
@@ -125,13 +127,24 @@ class ApexForgeCollector:
                             banner["internetdb_enrichment"] = enrichment
                             BANNERS_ENRICHED.labels(profile=name).inc()
 
-                # Save to MongoDB
+                # 3. Multi-source enrichment: VirusTotal + CVE details
+                vt_data = self.enricher.enrich_with_virustotal(banner)
+                if vt_data:
+                    banner.setdefault("sis_metadata", {})["virustotal"] = vt_data
+                    logger.debug(f"VirusTotal enrichment added for {banner.get('ip_str')}")
+
+                cve_data = self.enricher.enrich_with_cvedb(banner)
+                if cve_data:
+                    banner["vulns_enriched"] = cve_data
+                    logger.debug(f"CVE details enriched for {len(cve_data.get('cve_enriched', {}))} vulnerabilities")
+
+                # 4. Save to MongoDB (with all enrichments)
                 save_raw_banner(banner, name)
 
-                # Stats tracking
+                # 5. Stats tracking
                 stats.total_processed += 1
 
-                # Risk accumulation for this run
+                # Risk accumulation
                 if risk_analysis["level"] in ("HIGH", "CRITICAL"):
                     stats.high_critical_count += 1
                     stats.total_risk_sum += risk_analysis["score"]
@@ -141,13 +154,14 @@ class ApexForgeCollector:
                 country_code = location.get("country_code", "Unknown")
                 country_distribution[country_code] = country_distribution.get(country_code, 0) + 1
 
-                # Prometheus counter
+                # Prometheus
                 BANNERS_PROCESSED.labels(profile=name, risk_level=risk_analysis["level"]).inc()
 
                 if stats.total_processed % 100 == 0:
+                    avg_risk = stats.total_risk_sum / stats.total_processed if stats.total_processed > 0 else 0
                     logger.info(
                         f"[{name}] Processed {stats.total_processed} banners "
-                        f"(High/Critical: {stats.high_critical_count}, Avg Risk: {stats.total_risk_sum / stats.total_processed:.2f})"
+                        f"(High/Critical: {stats.high_critical_count}, Avg Risk: {avg_risk:.2f})"
                     )
 
             logger.info(
@@ -161,7 +175,6 @@ class ApexForgeCollector:
 
         finally:
             if stats.total_processed > 0:
-                # Pass risk data to PostgreSQL aggregation
                 update_intel_stats(
                     name,
                     stats.total_processed,
