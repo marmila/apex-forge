@@ -45,9 +45,9 @@ CURRENT_RISK_GAUGE = Gauge(
 class IntelligenceStats:
     profile_name: str
     total_processed: int = 0
-    new_banners: int = 0
     errors: int = 0
-    high_critical_count: int = 0
+    high_critical_count: int = 0          # Number of HIGH/CRITICAL banners in this run
+    total_risk_sum: float = 0.0           # Sum of risk scores in this run (for avg calculation)
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ApexForgeCollector:
@@ -82,7 +82,7 @@ class ApexForgeCollector:
             with COLLECTION_DURATION.labels(profile=name).time():
                 self._process_profile(name, base_query, stats, shutdown, enrich_internetdb)
 
-            # Update global gauge for high/critical assets
+            # Update global gauge with incremental high/critical from this run
             if stats.high_critical_count > 0:
                 CURRENT_RISK_GAUGE.inc(stats.high_critical_count)
 
@@ -116,7 +116,7 @@ class ApexForgeCollector:
                 risk_analysis = self.risk_scorer.analyze_banner(banner)
                 banner.setdefault("sis_metadata", {})["risk_analysis"] = risk_analysis
 
-                # InternetDB enrichment (free, no credits)
+                # InternetDB enrichment
                 if enrich_internetdb:
                     ip = banner.get("ip_str")
                     if ip:
@@ -128,22 +128,32 @@ class ApexForgeCollector:
                 # Save to MongoDB
                 save_raw_banner(banner, name)
 
-                # Stats
+                # Stats tracking
                 stats.total_processed += 1
+
+                # Risk accumulation for this run
                 if risk_analysis["level"] in ("HIGH", "CRITICAL"):
                     stats.high_critical_count += 1
+                    stats.total_risk_sum += risk_analysis["score"]
 
-                # Country distribution (safe get)
+                # Country distribution
                 location = banner.get("location", {})
                 country_code = location.get("country_code", "Unknown")
                 country_distribution[country_code] = country_distribution.get(country_code, 0) + 1
 
+                # Prometheus counter
                 BANNERS_PROCESSED.labels(profile=name, risk_level=risk_analysis["level"]).inc()
 
                 if stats.total_processed % 100 == 0:
-                    logger.info(f"[{name}] Processed {stats.total_processed} banners (High/Critical: {stats.high_critical_count})")
+                    logger.info(
+                        f"[{name}] Processed {stats.total_processed} banners "
+                        f"(High/Critical: {stats.high_critical_count}, Avg Risk: {stats.total_risk_sum / stats.total_processed:.2f})"
+                    )
 
-            logger.info(f"Completed profile {name}: {stats.total_processed} banners, {stats.high_critical_count} high/critical")
+            logger.info(
+                f"Completed profile {name}: {stats.total_processed} banners, "
+                f"{stats.high_critical_count} high/critical"
+            )
 
         except Exception as e:
             logger.error(f"Error processing profile {name} at banner {stats.total_processed}: {e}", exc_info=True)
@@ -151,9 +161,19 @@ class ApexForgeCollector:
 
         finally:
             if stats.total_processed > 0:
-                update_intel_stats(name, stats.total_processed, country_distribution)
-                log_intel_history(name, stats.total_processed)
-                # Optional: store high/critical count in a new PG column later
+                # Pass risk data to PostgreSQL aggregation
+                update_intel_stats(
+                    name,
+                    stats.total_processed,
+                    country_distribution,
+                    high_critical_new=stats.high_critical_count,
+                    total_risk_sum=stats.total_risk_sum
+                )
+                log_intel_history(
+                    name,
+                    stats.total_processed,
+                    high_critical_new=stats.high_critical_count
+                )
 
     def run(self):
         logger.info("Starting ApexForge continuous collection loop")

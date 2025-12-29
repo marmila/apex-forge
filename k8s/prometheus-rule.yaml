@@ -1,0 +1,26 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: apexforge-alerts
+  namespace: shodan-monitor
+spec:
+  groups:
+  - name: apexforge.rules
+    rules:
+    - alert: HighCriticalExposureSpike
+      expr: increase(apexforge_banners_processed_total{risk_level=~"HIGH|CRITICAL"}[1h]) > 50
+      for: 10m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Spike in high/critical exposures detected"
+        description: "{{ $value }} new high/critical assets in last hour"
+
+    - alert: NewCriticalAsset
+      expr: apexforge_current_high_critical_assets > 0
+      for: 5m
+      labels:
+        severity: warning
+      annotations:
+        summary: "Critical assets present"
+        description: "Currently {{ $value }} high/critical assets exposed"

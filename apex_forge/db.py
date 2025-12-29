@@ -2,7 +2,7 @@ import os
 import logging
 import hashlib
 from contextlib import contextmanager
-from typing import Generator, List, Optional, Dict, Any
+from typing import Generator, Dict, Any, Optional
 from datetime import datetime, timezone
 
 import psycopg2
@@ -14,7 +14,7 @@ from pymongo.collection import Collection
 from apex_forge.config import get_config
 from apex_forge.utils import sanitize_for_mongo
 
-logger = logging.getLogger("shodan.db")
+logger = logging.getLogger("apexforge.db")
 
 # Global connection managers
 _pg_pool = None
@@ -77,9 +77,7 @@ def get_pg_cursor(autocommit: bool = False) -> Generator:
 # --- Intelligence Storage Functions ---
 
 def get_last_checkpoint(profile_name: str) -> Optional[datetime]:
-    """
-    Retrieve the last successful collection timestamp for a profile from PostgreSQL.
-    """
+    """Retrieve the last successful collection timestamp for a profile."""
     try:
         with get_pg_cursor() as cur:
             cur.execute(
@@ -93,18 +91,12 @@ def get_last_checkpoint(profile_name: str) -> Optional[datetime]:
         return None
 
 def save_raw_banner(banner: Dict[str, Any], profile_name: str):
-    """
-    Store the complete Shodan JSON banner into MongoDB using a deterministic _id.
-    Prevents duplicates and handles large integers.
-    """
+    """Store complete banner in MongoDB with deterministic _id and risk metadata."""
     try:
         collection = get_mongo_collection()
 
-        # 1. Sanitize data for MongoDB 8-byte int limits
         sanitized_data = sanitize_for_mongo(banner)
 
-        # 2. Generate a deterministic unique ID for the banner
-        # Prevents duplicates if the same asset is scanned multiple times
         ip = banner.get('ip_str', '0.0.0.0')
         port = banner.get('port', 0)
         ts = banner.get('timestamp', '')
@@ -112,76 +104,102 @@ def save_raw_banner(banner: Dict[str, Any], profile_name: str):
         banner_id = hashlib.sha256(unique_string.encode()).hexdigest()
 
         sanitized_data['_id'] = banner_id
-        sanitized_data['sis_metadata'] = {
+        sanitized_data['sis_metadata'] = sanitized_data.get('sis_metadata', {})
+        sanitized_data['sis_metadata'].update({
             'profile_name': profile_name,
-            'collected_at': datetime.now(timezone.utc),
-            'processed': False
-        }
+            'collected_at': datetime.now(timezone.utc)
+        })
 
-        # 3. Upsert: replace if exists, insert if new
         collection.replace_one({'_id': banner_id}, sanitized_data, upsert=True)
 
     except Exception as e:
         logger.error(f"Failed to save raw banner to MongoDB: {e}")
 
-def update_intel_stats(profile_name: str, count: int, countries: Dict[str, int]):
+def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, int],
+                       high_critical_new: int = 0, total_risk_sum: float = 0.0):
     """
-    Upsert aggregated profile statistics into PostgreSQL.
-    Maintains a real-time snapshot of exposure per country.
-    """
-    query = """
-        INSERT INTO intel_stats (profile_name, total_count, country_dist, last_updated)
-        VALUES (%s, %s, %s, %s)
-        ON CONFLICT (profile_name)
-        DO UPDATE SET
-            total_count = EXCLUDED.total_count,
-            country_dist = EXCLUDED.country_dist,
-            last_updated = EXCLUDED.last_updated;
+    Update aggregated stats including risk metrics.
+    Maintains running average risk score and high/critical asset count.
     """
     try:
         with get_pg_cursor() as cur:
-            cur.execute(query, (
-                profile_name,
-                count,
-                Json(countries),
-                datetime.now(timezone.utc)
-            ))
-    except Exception as e:
-        logger.error(f"Failed to update intel stats for {profile_name}: {e}")
+            # Fetch current state
+            cur.execute("""
+                SELECT total_count, high_critical_count, avg_risk_score
+                FROM intel_stats WHERE profile_name = %s
+            """, (profile_name,))
+            row = cur.fetchone()
 
-def log_intel_history(profile_name: str, count: int):
-    """Record a time-series data point for threat velocity analysis."""
-    query = """
-        INSERT INTO intel_history (profile_name, count)
-        VALUES (%s, %s)
-    """
+            if row:
+                curr_total, curr_critical, curr_avg = row
+                new_total = curr_total + new_count
+                new_critical = curr_critical + high_critical_new
+
+                # Running average risk score
+                if new_count > 0 and total_risk_sum > 0:
+                    new_avg = (curr_avg * curr_total + total_risk_sum) / new_total
+                else:
+                    new_avg = curr_avg
+            else:
+                new_total = new_count
+                new_critical = high_critical_new
+                new_avg = total_risk_sum / new_count if new_count > 0 else 0.0
+
+            # Upsert
+            cur.execute("""
+                INSERT INTO intel_stats (
+                    profile_name, total_count, country_dist, last_updated,
+                    high_critical_count, avg_risk_score
+                ) VALUES (%s, %s, %s, CURRENT_TIMESTAMP, %s, %s)
+                ON CONFLICT (profile_name) DO UPDATE SET
+                    total_count = EXCLUDED.total_count,
+                    country_dist = EXCLUDED.country_dist,
+                    last_updated = CURRENT_TIMESTAMP,
+                    high_critical_count = EXCLUDED.high_critical_count,
+                    avg_risk_score = EXCLUDED.avg_risk_score
+            """, (profile_name, new_total, Json(countries), new_critical, round(new_avg, 2)))
+
+    except Exception as e:
+        logger.error(f"Failed to update intel_stats for {profile_name}: {e}")
+
+def log_intel_history(profile_name: str, new_count: int, high_critical_new: int = 0):
+    """Log daily collection with critical asset count for trend analysis."""
     try:
         with get_pg_cursor() as cur:
-            cur.execute(query, (profile_name, count))
+            cur.execute("""
+                INSERT INTO intel_history (profile_name, count, high_critical_new, observed_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+            """, (profile_name, new_count, high_critical_new))
     except Exception as e:
-        logger.error(f"Failed to log intel history for {profile_name}: {e}")
+        logger.error(f"Failed to log intel_history: {e}")
 
 # --- Initialization and Maintenance ---
 
 def init_databases():
-    """Initialize PostgreSQL schema and create views optimized for Grafana visualization."""
+    """Initialize schema with risk-enhanced tables and Grafana views."""
     commands = [
+        # Enhanced intel_stats with risk columns
         """
         CREATE TABLE IF NOT EXISTS intel_stats (
             profile_name VARCHAR(100) PRIMARY KEY,
             total_count INTEGER DEFAULT 0,
             country_dist JSONB DEFAULT '{}',
-            last_updated TIMESTAMP WITH TIME ZONE
+            last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+            high_critical_count INTEGER DEFAULT 0,
+            avg_risk_score FLOAT DEFAULT 0.0
         );
         """,
+        # Enhanced history with critical daily count
         """
         CREATE TABLE IF NOT EXISTS intel_history (
             id SERIAL PRIMARY KEY,
             profile_name VARCHAR(100),
             count INTEGER,
+            high_critical_new INTEGER DEFAULT 0,
             observed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
         );
         """,
+        # Existing + new risk-focused views
         """
         CREATE OR REPLACE VIEW vw_exposed_assets_by_country AS
         SELECT
@@ -194,31 +212,45 @@ def init_databases():
         WHERE s.country_dist != '{}' AND t.country_count IS NOT NULL;
         """,
         """
-        CREATE OR REPLACE VIEW vw_exposure_trend AS
-        SELECT
-            observed_at::date AS date,
-            SUM(count) AS new_assets_daily,
-            SUM(SUM(count)) OVER (ORDER BY observed_at::date) AS total_assets_cumulative
-        FROM intel_history
-        GROUP BY observed_at::date
-        ORDER BY date;
-        """,
-        """
         CREATE OR REPLACE VIEW vw_exposure_trend_by_profile AS
         SELECT
             profile_name,
             observed_at::date AS date,
             count AS new_assets_daily,
-            SUM(count) OVER (PARTITION BY profile_name ORDER BY observed_at::date) AS total_assets_cumulative
+            high_critical_new AS new_critical_daily,
+            SUM(count) OVER (PARTITION BY profile_name ORDER BY observed_at::date) AS total_assets_cumulative,
+            SUM(high_critical_new) OVER (PARTITION BY profile_name ORDER BY observed_at::date) AS critical_assets_cumulative
         FROM intel_history
-        GROUP BY profile_name, observed_at::date, count
+        GROUP BY profile_name, observed_at::date, count, high_critical_new
         ORDER BY profile_name, date;
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_risk_summary AS
+        SELECT
+            SUM(high_critical_count) AS total_high_critical_assets,
+            AVG(avg_risk_score) AS global_avg_risk_score,
+            COUNT(*) FILTER (WHERE high_critical_count > 0) AS profiles_with_critical_assets
+        FROM intel_stats;
+        """,
+        """
+        CREATE OR REPLACE VIEW vw_top_risk_profiles AS
+        SELECT
+            profile_name,
+            high_critical_count,
+            avg_risk_score,
+            total_count,
+            ROUND((high_critical_count::float / total_count) * 100, 2) AS critical_percentage
+        FROM intel_stats
+        WHERE total_count > 0
+        ORDER BY high_critical_count DESC
+        LIMIT 15;
         """,
         """
         CREATE OR REPLACE VIEW vw_current_summary AS
         SELECT
             COUNT(*) AS active_profiles,
             SUM(total_count) AS total_exposed_assets,
+            SUM(high_critical_count) AS total_high_critical_assets,
             MAX(last_updated) AS last_collection_cycle
         FROM intel_stats;
         """
@@ -227,13 +259,13 @@ def init_databases():
         with get_pg_cursor(autocommit=True) as cur:
             for cmd in commands:
                 cur.execute(cmd)
-        logger.info("PostgreSQL schemas and Grafana views initialized successfully")
+        logger.info("ApexForge PostgreSQL schema and risk-enhanced views initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
         raise
 
 def get_database_stats() -> Dict[str, Any]:
-    """Fetch high-level overview of the collected intelligence."""
+    """Fetch high-level overview including risk metrics."""
     stats = {}
     try:
         with get_pg_cursor() as cur:
@@ -242,6 +274,10 @@ def get_database_stats() -> Dict[str, Any]:
 
             cur.execute("SELECT SUM(total_count) FROM intel_stats")
             stats['total_exposed_assets'] = cur.fetchone()[0] or 0
+
+            cur.execute("SELECT total_high_critical_assets FROM vw_risk_summary")
+            stats['total_high_critical_assets'] = cur.fetchone()[0] or 0
+
     except Exception as e:
         logger.error(f"Failed to retrieve database stats: {e}")
     return stats
@@ -255,7 +291,6 @@ def close_connections():
     if _mongo_client:
         _mongo_client.close()
         logger.info("MongoDB connection closed")
-
 
 
 
