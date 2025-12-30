@@ -247,7 +247,7 @@ def init_databases():
             high_critical_count,
             avg_risk_score,
             total_count,
-            ROUND((high_critical_count::float / total_count) * 100, 2) AS critical_percentage
+            ROUND((high_critical_count::numeric / total_count) * 100, 2) AS critical_percentage
         FROM intel_stats
         WHERE total_count > 0
         ORDER BY high_critical_count DESC
@@ -269,7 +269,7 @@ def init_databases():
                 cur.execute(cmd)
         logger.info("ApexForge PostgreSQL schema and risk-enhanced views initialized successfully")
     except Exception as e:
-        logger.error(f"Database initialization failed: {e}")
+        logger.error(f"Database initialization failed: {e}", exc_info=True)
         raise
 
 def get_database_stats() -> Dict[str, Any]:
