@@ -145,7 +145,10 @@ def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, i
                 new_critical = high_critical_new
                 new_avg = total_risk_sum / new_count if new_count > 0 else 0.0
 
-            # Upsert
+            # Round to 2 decimals for storage
+            new_avg = round(new_avg, 2)
+
+            # Single upsert query
             cur.execute("""
                 INSERT INTO intel_stats (
                     profile_name, total_count, country_dist, last_updated,
@@ -157,10 +160,10 @@ def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, i
                     last_updated = CURRENT_TIMESTAMP,
                     high_critical_count = EXCLUDED.high_critical_count,
                     avg_risk_score = EXCLUDED.avg_risk_score
-            """, (profile_name, new_total, Json(countries), new_critical, round(new_avg, 2)))
+            """, (profile_name, new_total, Json(countries), new_critical, new_avg))
 
     except Exception as e:
-        logger.error(f"Failed to update intel_stats for {profile_name}: {e}")
+        logger.error(f"Failed to update intel_stats for {profile_name}: {e}", exc_info=True)
 
 def log_intel_history(profile_name: str, new_count: int, high_critical_new: int = 0):
     """Log daily collection with critical asset count for trend analysis."""
