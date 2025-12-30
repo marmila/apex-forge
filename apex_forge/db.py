@@ -247,7 +247,7 @@ def init_databases():
             high_critical_count,
             avg_risk_score,
             total_count,
-            ROUND((high_critical_count::numeric / total_count) * 100, 2) AS critical_percentage
+            ROUND((high_critical_count::numeric / NULLIF(total_count, 0)) * 100, 2) AS critical_percentage
         FROM intel_stats
         WHERE total_count > 0
         ORDER BY high_critical_count DESC
