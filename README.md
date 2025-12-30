@@ -78,10 +78,10 @@ Build and push multi-platform image
 
 The collector uses existing secrets:
 
-shodan-secret → `SHODAN_API_KEY`
-virustotal-api-key → `VIRUSTOTAL_API_KEY`
-shodan-db-credentials → `PostgreSQL`
-shodan-mongo-credentials → `MongoDB`
+- shodan-secret → `SHODAN_API_KEY`
+- virustotal-api-key → `VIRUSTOTAL_API_KEY`
+- shodan-db-credentials → `PostgreSQL`
+- shodan-mongo-credentials → `MongoDB`
 
 ## Security & Ethics
 This tool performs passive intelligence gathering using publicly indexed data from Shodan.
