@@ -1,5 +1,5 @@
 """
-Configuration management for Shodan Intelligence Sentinel (SIS).
+Configuration management for ApexForge.
 Optimized for K3s environment variable injection and YAML-based threat profiles.
 """
 import os
@@ -8,9 +8,10 @@ import yaml
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from apex_forge.enrichment import Enricher
+from pydantic import ValidationError
+from apex_forge.models import IntelProfile  # Import for validation
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("apexforge.config")
 
 class ConfigError(Exception):
     """Configuration error."""
@@ -38,17 +39,16 @@ class DatabaseConfig:
 class MongoConfig:
     """MongoDB configuration for raw banner storage."""
     uri: str = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-    db_name: str = os.getenv("MONGO_DB_NAME", "shodan_intelligence")
+    db_name: str = os.getenv("MONGO_DB_NAME", "apexforge_intelligence")
     collection: str = os.getenv("MONGO_COLLECTION", "raw_banners")
 
 @dataclass
 class ShodanConfig:
     """Shodan API configuration."""
     api_key: str = os.getenv("SHODAN_API_KEY", "")
-    vt_api_key: str = os.getenv("VIRUSTOTAL_API_KEY", "")
+    vt_api_key: str = os.getenv("VIRUSTOTAL_API_KEY", "")  # New
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     request_delay: float = float(os.getenv("REQUEST_DELAY", "1.0"))
-    # In un'ottica Threat Intel, l'intervallo è globale tra i profili
     scan_interval: int = int(os.getenv("INTERVAL_SECONDS", "21600"))
 
 @dataclass
@@ -63,13 +63,22 @@ class Config:
 
     def __post_init__(self):
         if not self.shodan.api_key:
-            logger.warning("SHODAN_API_KEY is not set. Collector will fail to run.")
+            # Fallback to Vault if needed (from previous)
+            try:
+                import hvac
+                client = hvac.Client(url=os.getenv("VAULT_ADDR", "http://vault.vault-ns.svc.cluster.local:8200"))
+                client.token = os.getenv("VAULT_TOKEN")
+                if client.is_authenticated():
+                    secret = client.secrets.kv.v2.read_secret_version(mount_point='secret', path='shodan/api_key')
+                    self.shodan.api_key = secret['data']['data']['value']
+                else:
+                    logger.warning("Vault not authenticated. Using env var fallback.")
+            except Exception as e:
+                logger.error(f"Vault fallback failed: {e}")
+        if not self.shodan.api_key:
+            raise ConfigError("SHODAN_API_KEY missing from env and Vault.")
 
-    def load_profiles(self) -> List[Dict[str, Any]]:
-        """
-        Loads intelligence profiles from the YAML file.
-        Returns a list of dictionaries representing search targets.
-        """
+    def load_profiles(self) -> List[IntelProfile]:
         if not os.path.exists(self.profiles_path):
             logger.error(f"Profiles file not found at: {self.profiles_path}")
             return []
@@ -77,11 +86,16 @@ class Config:
         try:
             with open(self.profiles_path, 'r') as f:
                 data = yaml.safe_load(f)
-                profiles = data.get('intelligence_profiles', [])
-                logger.info(f"Loaded {len(profiles)} intelligence profiles from {self.profiles_path}")
+                raw_profiles = data.get('intelligence_profiles', [])
+                # Validate with Pydantic
+                profiles = [IntelProfile(**p) for p in raw_profiles]
+                logger.info(f"Loaded and validated {len(profiles)} intelligence profiles from {self.profiles_path}")
                 return profiles
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML profiles: {e}")
+            return []
+        except ValidationError as e:
+            logger.error(f"Profile validation failed: {e}")
             return []
         except Exception as e:
             logger.error(f"Unexpected error loading profiles: {e}")

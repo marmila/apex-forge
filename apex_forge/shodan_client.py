@@ -1,29 +1,12 @@
 import time
 import logging
-from typing import Dict, Any, List, Optional, Generator
-from dataclasses import dataclass
-from enum import Enum
+from typing import Dict, Any, Optional, Generator
 import backoff
 import shodan
 import requests
 from shodan.exception import APIError
 
 logger = logging.getLogger("apexforge.shodan")
-
-class ShodanErrorType(Enum):
-    RATE_LIMITED = "rate_limited"
-    NOT_FOUND = "not_found"
-    INVALID_IP = "invalid_ip"
-    NO_INFORMATION = "no_information"
-    NETWORK_ERROR = "network_error"
-    UNKNOWN = "unknown"
-
-@dataclass
-class ShodanError:
-    type: ShodanErrorType
-    message: str
-    query: str
-    retry_after: Optional[int] = None
 
 class ShodanClient:
     """
@@ -99,16 +82,3 @@ class ShodanClient:
         except Exception as e:
             logger.error(f"Failed to fetch Shodan API info: {e}")
             return {}
-
-class ShodanClientPool:
-    """Pool of Shodan clients to handle multiple API keys if needed."""
-    def __init__(self, api_keys: List[str]):
-        if not api_keys:
-            raise ValueError("At least one API key is required")
-        self.clients = [ShodanClient(key) for key in api_keys]
-        self.current_index = 0
-
-    def get_client(self) -> ShodanClient:
-        client = self.clients[self.current_index]
-        self.current_index = (self.current_index + 1) % len(self.clients)
-        return client
