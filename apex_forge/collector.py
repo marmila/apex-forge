@@ -72,14 +72,14 @@ class ApexForgeCollector:
             logger.warning("No intelligence profiles loaded – check profiles.yaml")
             return
 
-        for profile_dict in profiles:
+        for profile in profiles:  # profile is now IntelProfile object
             if shutdown.should_exit:
                 break
 
-            name = profile_dict["name"]
-            base_query = profile_dict["query"]
-            enrich_internetdb = profile_dict.get("enrich_with_internetdb", True)
-            max_results = profile_dict.get("max_results")  # NEW: Extract limit from profile
+            name = profile.name  # <-- object attribute
+            base_query = profile.query
+            enrich_internetdb = profile.enrich_with_internetdb
+            max_results = getattr(profile, "max_results", None)  # safe access
 
             stats = IntelligenceStats(profile_name=name)
             with COLLECTION_DURATION.labels(profile=name).time():
@@ -89,7 +89,7 @@ class ApexForgeCollector:
                     stats=stats,
                     shutdown=shutdown,
                     enrich_internetdb=enrich_internetdb,
-                    max_results=max_results  # NEW: Pass to processor
+                    max_results=max_results
                 )
 
             if stats.high_critical_count > 0:
@@ -102,7 +102,7 @@ class ApexForgeCollector:
         stats: IntelligenceStats,
         shutdown: GracefulShutdown,
         enrich_internetdb: bool,
-        max_results: Optional[int] = None  # NEW: Accept limit
+        max_results: Optional[int] = None
     ):
         logger.info(f"Starting collection for profile: {name} | Query: {base_query}")
         if max_results:
@@ -120,7 +120,6 @@ class ApexForgeCollector:
         country_distribution: Dict[str, int] = {}
 
         try:
-            # NEW: Pass max_results to search_intel
             for banner in self.client.search_intel(active_query, limit=max_results):
                 if shutdown.should_exit:
                     break
