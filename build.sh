@@ -5,8 +5,8 @@
 set -e
 
 # Configuration - Update with your actual registry
-IMAGE_NAME="ghcr.io/marmila/shodan-intel-sentinel"
-VERSION="2.0.0"
+IMAGE_NAME="ghcr.io/marmila/apex-forge"
+VERSION="3.0.0"
 
 # Platforms to build for (Optimized for modern 64-bit clusters like k3s)
 PLATFORMS="linux/amd64,linux/arm64"
