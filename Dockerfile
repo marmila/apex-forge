@@ -23,13 +23,12 @@ COPY requirements.txt .
 
 # Install Python dependencies
 # --no-cache-dir reduces image size
-# pip will automatically fetch the correct wheel for the target architecture
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application structure
-# Ensure profiles.yaml is copied if it's in the root or shodan_monitor/
-COPY shodan_monitor/ ./shodan_monitor/
+# Updated: apex_forge instead of shodan_monitor
+COPY apex_forge/ ./apex_forge/
 COPY scripts/ ./scripts/
 COPY profiles.yaml ./profiles.yaml
 
