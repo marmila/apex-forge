@@ -120,6 +120,7 @@ def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, i
     """
     Update aggregated stats including risk metrics.
     Maintains running average risk score and high/critical asset count.
+    Handles string-to-number conversion from DictCursor.
     """
     try:
         with get_pg_cursor() as cur:
@@ -131,7 +132,11 @@ def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, i
             row = cur.fetchone()
 
             if row:
-                curr_total, curr_critical, curr_avg = row
+                # Convert from string to proper types (DictCursor can return strings)
+                curr_total = int(row["total_count"] or 0)
+                curr_critical = int(row["high_critical_count"] or 0)
+                curr_avg = float(row["avg_risk_score"] or 0.0)
+
                 new_total = curr_total + new_count
                 new_critical = curr_critical + high_critical_new
 
@@ -145,7 +150,7 @@ def update_intel_stats(profile_name: str, new_count: int, countries: Dict[str, i
                 new_critical = high_critical_new
                 new_avg = total_risk_sum / new_count if new_count > 0 else 0.0
 
-            # Round to 2 decimals for storage
+            # Round to 2 decimals
             new_avg = round(new_avg, 2)
 
             # Single upsert query
