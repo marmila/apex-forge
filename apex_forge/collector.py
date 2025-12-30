@@ -16,7 +16,7 @@ from apex_forge.db import (
 )
 from apex_forge.utils import GracefulShutdown, Timer
 from apex_forge.risk_scorer import RiskScorer
-from apex_forge.enrichment import Enricher  # <-- NEW: Multi-source enrichment
+from apex_forge.enrichment import Enricher
 from prometheus_client import Counter, Gauge, Histogram, start_http_server
 
 logger = logging.getLogger("apexforge.collector")
@@ -47,8 +47,8 @@ class IntelligenceStats:
     profile_name: str
     total_processed: int = 0
     errors: int = 0
-    high_critical_count: int = 0          # Number of HIGH/CRITICAL banners in this run
-    total_risk_sum: float = 0.0           # Sum of risk scores in this run (for avg calculation)
+    high_critical_count: int = 0
+    total_risk_sum: float = 0.0
     start_time: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 class ApexForgeCollector:
@@ -60,10 +60,9 @@ class ApexForgeCollector:
         self.client = shodan_client
         self.config = get_config()
         self.risk_scorer = RiskScorer()
-        self.enricher = Enricher(vt_api_key=self.config.shodan.vt_api_key)  # Multi-source enricher
+        self.enricher = Enricher(vt_api_key=self.config.shodan.vt_api_key)
         init_databases()
 
-        # Start Prometheus metrics server (port 8000 – expose via k8s Service later)
         start_http_server(8000)
         logger.info("Prometheus metrics server started on :8000")
 
@@ -76,15 +75,23 @@ class ApexForgeCollector:
         for profile_dict in profiles:
             if shutdown.should_exit:
                 break
+
             name = profile_dict["name"]
             base_query = profile_dict["query"]
             enrich_internetdb = profile_dict.get("enrich_with_internetdb", True)
+            max_results = profile_dict.get("max_results")  # NEW: Extract limit from profile
 
             stats = IntelligenceStats(profile_name=name)
             with COLLECTION_DURATION.labels(profile=name).time():
-                self._process_profile(name, base_query, stats, shutdown, enrich_internetdb)
+                self._process_profile(
+                    name=name,
+                    base_query=base_query,
+                    stats=stats,
+                    shutdown=shutdown,
+                    enrich_internetdb=enrich_internetdb,
+                    max_results=max_results  # NEW: Pass to processor
+                )
 
-            # Update global gauge with incremental high/critical from this run
             if stats.high_critical_count > 0:
                 CURRENT_RISK_GAUGE.inc(stats.high_critical_count)
 
@@ -94,9 +101,12 @@ class ApexForgeCollector:
         base_query: str,
         stats: IntelligenceStats,
         shutdown: GracefulShutdown,
-        enrich_internetdb: bool
+        enrich_internetdb: bool,
+        max_results: Optional[int] = None  # NEW: Accept limit
     ):
         logger.info(f"Starting collection for profile: {name} | Query: {base_query}")
+        if max_results:
+            logger.info(f"Limit set to {max_results} banners")
 
         last_checkpoint = get_last_checkpoint(name)
         if last_checkpoint:
@@ -110,15 +120,16 @@ class ApexForgeCollector:
         country_distribution: Dict[str, int] = {}
 
         try:
-            for banner in self.client.search_intel(active_query):
+            # NEW: Pass max_results to search_intel
+            for banner in self.client.search_intel(active_query, limit=max_results):
                 if shutdown.should_exit:
                     break
 
-                # 1. Risk scoring
+                # Risk scoring
                 risk_analysis = self.risk_scorer.analyze_banner(banner)
                 banner.setdefault("sis_metadata", {})["risk_analysis"] = risk_analysis
 
-                # 2. InternetDB enrichment (free)
+                # InternetDB enrichment
                 if enrich_internetdb:
                     ip = banner.get("ip_str")
                     if ip:
@@ -127,24 +138,21 @@ class ApexForgeCollector:
                             banner["internetdb_enrichment"] = enrichment
                             BANNERS_ENRICHED.labels(profile=name).inc()
 
-                # 3. Multi-source enrichment: VirusTotal + CVE details
+                # Multi-source enrichment
                 vt_data = self.enricher.enrich_with_virustotal(banner)
                 if vt_data:
                     banner.setdefault("sis_metadata", {})["virustotal"] = vt_data
-                    logger.debug(f"VirusTotal enrichment added for {banner.get('ip_str')}")
 
                 cve_data = self.enricher.enrich_with_cvedb(banner)
                 if cve_data:
                     banner["vulns_enriched"] = cve_data
-                    logger.debug(f"CVE details enriched for {len(cve_data.get('cve_enriched', {}))} vulnerabilities")
 
-                # 4. Save to MongoDB (with all enrichments)
+                # Save to MongoDB
                 save_raw_banner(banner, name)
 
-                # 5. Stats tracking
+                # Stats tracking
                 stats.total_processed += 1
 
-                # Risk accumulation
                 if risk_analysis["level"] in ("HIGH", "CRITICAL"):
                     stats.high_critical_count += 1
                     stats.total_risk_sum += risk_analysis["score"]
@@ -154,7 +162,6 @@ class ApexForgeCollector:
                 country_code = location.get("country_code", "Unknown")
                 country_distribution[country_code] = country_distribution.get(country_code, 0) + 1
 
-                # Prometheus
                 BANNERS_PROCESSED.labels(profile=name, risk_level=risk_analysis["level"]).inc()
 
                 if stats.total_processed % 100 == 0:
