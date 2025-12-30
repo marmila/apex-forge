@@ -16,7 +16,7 @@ Built on Shodan as the primary intelligence source with built-in support for Int
 - C2 infrastructure (Cobalt Strike beacons, JARM fingerprints)
 - Industrial control systems (Modbus, Siemens S7, BACnet)
 - Vulnerable web applications (WordPress, phpMyAdmin)
-- Emerging risks: exposed AI/ML services (Flask, TensorBoard, Jupyter on ports 5000–9000)
+- To add: Emerging risks: exposed AI/ML services (Flask, TensorBoard, Jupyter on ports 5000–9000)
 
 ## Architecture
 
