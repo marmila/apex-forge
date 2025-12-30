@@ -9,7 +9,7 @@ from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 from pydantic import ValidationError
-from apex_forge.models import IntelProfile  # Import for validation
+from apex_forge.models import IntelProfile
 
 logger = logging.getLogger("apexforge.config")
 
@@ -46,7 +46,7 @@ class MongoConfig:
 class ShodanConfig:
     """Shodan API configuration."""
     api_key: str = os.getenv("SHODAN_API_KEY", "")
-    vt_api_key: str = os.getenv("VIRUSTOTAL_API_KEY", "")  # New
+    vt_api_key: str = os.getenv("VIRUSTOTAL_API_KEY", "")
     max_retries: int = int(os.getenv("MAX_RETRIES", "3"))
     request_delay: float = float(os.getenv("REQUEST_DELAY", "1.0"))
     scan_interval: int = int(os.getenv("INTERVAL_SECONDS", "21600"))
@@ -62,21 +62,24 @@ class Config:
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
     def __post_init__(self):
+        # Only try Vault fallback if api_key is empty
         if not self.shodan.api_key:
-            # Fallback to Vault if needed (from previous)
             try:
                 import hvac
-                client = hvac.Client(url=os.getenv("VAULT_ADDR", "http://vault.vault-ns.svc.cluster.local:8200"))
-                client.token = os.getenv("VAULT_TOKEN")
+                client = hvac.Client(url=os.getenv("VAULT_ADDR"))
                 if client.is_authenticated():
-                    secret = client.secrets.kv.v2.read_secret_version(mount_point='secret', path='shodan/api_key')
+                    secret = client.secrets.kv.v2.read_secret_version(path='shodan/api_key')
                     self.shodan.api_key = secret['data']['data']['value']
+                    logger.info("Loaded SHODAN_API_KEY from Vault")
                 else:
-                    logger.warning("Vault not authenticated. Using env var fallback.")
+                    logger.warning("Vault authentication failed")
             except Exception as e:
-                logger.error(f"Vault fallback failed: {e}")
+                logger.debug(f"Vault not available or failed: {e}")
+
+        # ONLY warn if key missing — do NOT raise error
+        # The collector will fail later if needed, but init jobs can proceed
         if not self.shodan.api_key:
-            raise ConfigError("SHODAN_API_KEY missing from env and Vault.")
+            logger.warning("SHODAN_API_KEY not found in env or Vault — collection will be disabled")
 
     def load_profiles(self) -> List[IntelProfile]:
         if not os.path.exists(self.profiles_path):
@@ -87,9 +90,8 @@ class Config:
             with open(self.profiles_path, 'r') as f:
                 data = yaml.safe_load(f)
                 raw_profiles = data.get('intelligence_profiles', [])
-                # Validate with Pydantic
                 profiles = [IntelProfile(**p) for p in raw_profiles]
-                logger.info(f"Loaded and validated {len(profiles)} intelligence profiles from {self.profiles_path}")
+                logger.info(f"Loaded and validated {len(profiles)} intelligence profiles")
                 return profiles
         except yaml.YAMLError as e:
             logger.error(f"Error parsing YAML profiles: {e}")
@@ -105,14 +107,12 @@ class Config:
 _config_instance: Optional[Config] = None
 
 def get_config() -> Config:
-    """Get or create the global configuration instance."""
     global _config_instance
     if _config_instance is None:
         _config_instance = Config()
     return _config_instance
 
 def reload_config() -> Config:
-    """Reload configuration from environment variables."""
     global _config_instance
     _config_instance = Config()
     return _config_instance
