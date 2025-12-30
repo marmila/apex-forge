@@ -5,7 +5,7 @@ import os
 
 from apex_forge.config import get_config
 from apex_forge.shodan_client import ShodanClient
-from apex_forge.collector import ShodanCollector
+from apex_forge.collector import ApexForgeCollector  # <-- CORRETTO: nome classe aggiornato
 from apex_forge.db import get_database_stats
 from apex_forge.utils import setup_structured_logging
 
@@ -35,6 +35,7 @@ def show_stats():
     print("\n=== ApexForge Intelligence Stats ===")
     print(f"Active Threat Profiles:     {stats.get('active_profiles', 0)}")
     print(f"Total Exposed Assets:       {stats.get('total_exposed_assets', 0)}")
+    print(f"Total High/Critical Assets: {stats.get('total_high_critical_assets', 0)}")
     print("========================================\n")
 
 def main():
@@ -58,7 +59,7 @@ def main():
         request_delay=config.shodan.request_delay
     )
 
-    collector = ShodanCollector(shodan_client=client)
+    collector = ApexForgeCollector(shodan_client=client)  # <-- CORRETTO: classe giusta
 
     try:
         if args.once:
